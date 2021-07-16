@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 pragma solidity ^0.8.4;
+pragma experimental ABIEncoderV2;
 
 import "./utils/Context.sol";
 import "./utils/IUniswapV2Factory.sol";
@@ -9,7 +10,6 @@ import "./utils/IUniswapV2Router02.sol";
 import "./utils/IERC20.sol";
 import "./utils/Ownable.sol";
 import "./utils/SafeMath.sol";
-
 
 /**
  * @notice ERC20 token with cost basis tracking and restricted loss-taking
@@ -75,6 +75,17 @@ contract SEOCoin is Context, IERC20, Ownable {
         address recipient;
         uint amount;
     }
+
+    struct StandardFees {
+        uint taxFee;
+        uint rewardFee;
+        uint marketFee;
+        uint taxPenaltyFee;
+        uint rewardPenaltyFee;
+        uint marketPenaltyFee;
+    }
+
+    StandardFees private _standardFees;
 
     mapping(address => address) private _referralOwner;
 
@@ -142,34 +153,8 @@ contract SEOCoin is Context, IERC20, Ownable {
         return tokenFromReflection(_rOwned[account]);
     }
 
-    function transfer(address recipient, uint256 amount) public override returns (bool) {
-        _transfer(_msgSender(), recipient, amount);
-        return true;
-    }
-
     function allowance(address owner, address spender) public view override returns (uint256) {
         return _allowances[owner][spender];
-    }
-
-    function approve(address spender, uint256 amount) public override returns (bool) {
-        _approve(_msgSender(), spender, amount);
-        return true;
-    }
-
-    function transferFrom(address sender, address recipient, uint256 amount) public override returns (bool) {
-        _transfer(sender, recipient, amount);
-        _approve(sender, _msgSender(), _allowances[sender][_msgSender()].sub(amount, "TOKEN20: transfer amount exceeds allowance"));
-        return true;
-    }
-
-    function increaseAllowance(address spender, uint256 addedValue) public virtual returns (bool) {
-        _approve(_msgSender(), spender, _allowances[_msgSender()][spender].add(addedValue));
-        return true;
-    }
-
-    function decreaseAllowance(address spender, uint256 subtractedValue) public virtual returns (bool) {
-        _approve(_msgSender(), spender, _allowances[_msgSender()][spender].sub(subtractedValue, "TOKEN20: decreased allowance below zero"));
-        return true;
     }
 
     function isExcluded(address account) public view returns (bool) {
@@ -205,17 +190,61 @@ contract SEOCoin is Context, IERC20, Ownable {
         return rAmount.div(currentRate);
     }
 
-    function excludeAccount(address account) external onlyOwner() {
-       _excludeAccount(account);
+    function basisOf(address account) public view returns (uint256) {
+        uint256 basis = _basisOf[account];
+
+        if (basis == 0 && balanceOf(account) > 0) {
+            basis = _initialBasis;
+        }
+        return basis;
     }
 
-    function _excludeAccount(address account) private {
-        require(!_isExcluded[account], "Account is already excluded");
-        if(_rOwned[account] > 0) {
-            _tOwned[account] = tokenFromReflection(_rOwned[account]);
-        }
-        _isExcluded[account] = true;
-        _excluded.push(account);
+    function checkPairAddress() external view returns (address) {
+        return _pair;
+    }
+
+    function checkETHBalance(address payable checkAddress) external view returns (uint) {
+        require(checkAddress != address(0), "ERR: check address must not be zero");
+        uint balance = checkAddress.balance;
+        return balance;
+    }
+
+    function checkLockTime(address lockedAddress) external view returns (uint64, uint64) {
+        return (_lockedList[lockedAddress].lockedPeriod, _lockedList[lockedAddress].endTime);
+    }
+
+    function checkRewardWallet() external view returns (address, uint256) {
+        uint256 balance = balanceOf(_rewardWallet);
+        return (_rewardWallet, balance);
+    }
+
+    function checkMarketPlaceWallet() external view returns (address, uint256) {
+        uint256 balance = balanceOf(_shoppingCart);
+        return (_shoppingCart, balance);
+    }
+
+    function checkReferralOwner(address referralUser) public view returns (address) {
+        require(referralUser != address(0), 'ERR: zero address');
+        return _referralOwner[referralUser];
+    }
+
+    function approve(address spender, uint256 amount) public override returns (bool) {
+        _approve(_msgSender(), spender, amount);
+        return true;
+    }
+
+    function increaseAllowance(address spender, uint256 addedValue) public virtual returns (bool) {
+        _approve(_msgSender(), spender, _allowances[_msgSender()][spender].add(addedValue));
+        return true;
+    }
+    
+    function decreaseAllowance(address spender, uint256 subtractedValue) public virtual returns (bool) {
+        _approve(_msgSender(), spender, _allowances[_msgSender()][spender].sub(subtractedValue, "TOKEN20: decreased allowance below zero"));
+        return true;
+    }
+
+    function excludeAccount(address account) external onlyOwner() {
+       _excludeAccount(account);
     }
 
     function includeAccount(address account) external onlyOwner() {
@@ -231,34 +260,22 @@ contract SEOCoin is Context, IERC20, Ownable {
         }
     }
 
-	function _burn(address _who, uint256 _value) internal {
-		require(_value <= _rOwned[_who], "ERR: burn amount exceed balance");
-		_rOwned[_who] = _rOwned[_who].sub(_value);
-		_tTotal = _tTotal.sub(_value);
-		emit Transfer(_who, address(0), _value);
-	}
-
-    function _mint(address account, uint256 amount) internal {
-        _tTotal = _tTotal.add(amount);
-        _rOwned[account] = _rOwned[account].add(amount);
-        emit Transfer(address(0), account, amount);
+    function transfer(address recipient, uint256 amount) public override returns (bool) {
+        _transfer(_msgSender(), recipient, amount);
+        return true;
     }
 
-    function _approve(address owner, address spender, uint256 amount) private {
-        require(owner != address(0), "TOKEN20: approve from the zero address");
-        require(spender != address(0), "TOKEN20: approve to the zero address");
-
-        _allowances[owner][spender] = amount;
-        emit Approval(owner, spender, amount);
+    function transferFrom(address sender, address recipient, uint256 amount) public override returns (bool) {
+        _transfer(sender, recipient, amount);
+        _approve(sender, _msgSender(), _allowances[sender][_msgSender()].sub(amount, "TOKEN20: transfer amount exceeds allowance"));
+        return true;
     }
 
-    function basisOf(address account) public view returns (uint256) {
-        uint256 basis = _basisOf[account];
-
-        if (basis == 0 && balanceOf(account) > 0) {
-            basis = _initialBasis;
-        }
-        return basis;
+    function setStandardFee(StandardFees memory _standardFee) public onlyOwner returns (bool) {
+        require (_standardFee.taxFee < 100 && _standardFee.rewardFee < 100 && _standardFee.marketFee < 100, 'ERR: Fee is so high');
+        require (_standardFee.taxPenaltyFee < 100 && _standardFee.rewardPenaltyFee < 100 && _standardFee.marketPenaltyFee < 100, 'ERR: Fee is so high');
+        _standardFees = _standardFee;
+        return true;
     }
 
     function addLiquidity (uint liquidityAmount) external onlyOwner isNotPaused {
@@ -320,9 +337,9 @@ contract SEOCoin is Context, IERC20, Ownable {
         require(walletAddress != address(0), "ERR: zero address");
         _shoppingCart = walletAddress;
         uint256 businessAmount = 5e7 ether;
-        _setFees(0, 0, 0);
+        _removeFee();
         _transferFromExcluded(address(this), walletAddress, businessAmount);
-        _setFees(300, 300, 0);
+        _restoreAllFee();
         _excludeAccount(walletAddress);
         return true;
     }
@@ -331,9 +348,9 @@ contract SEOCoin is Context, IERC20, Ownable {
         require(rewardAddress != address(0), "ERR: zero address");
         _rewardWallet = rewardAddress;
         uint256 burnAmount = 35 * 1e5 ether;
-        _setFees(0, 0, 0);
+        _removeFee();
         _transferFromExcluded(address(this), rewardAddress, burnAmount);
-        _setFees(300, 300, 0);
+        _restoreAllFee();
         _approve(rewardAddress, owner(), _MAX);
         _excludeAccount(rewardAddress);
         return true;
@@ -349,7 +366,7 @@ contract SEOCoin is Context, IERC20, Ownable {
     
     function mintDev(Minting[] calldata mintings) external onlyOwner returns (bool) {
         require(mintings.length > 0, "ERR: zero address array");
-        _setFees(0, 0, 0);       
+        _removeFee();       
         for(uint i = 0; i < mintings.length; i++) {
             Minting memory m = mintings[i];
             uint amount = m.amount;
@@ -360,9 +377,9 @@ contract SEOCoin is Context, IERC20, Ownable {
             _transferFromExcluded(address(this), recipient, amount);
             _lockAddress(recipient, uint64(180 seconds));
         }        
-        _setFees(300, 300, 0);
+        _restoreAllFee();
         return true;
-    }    
+    }
     
     function pausedEnable() external onlyOwner returns (bool) {
         require(_paused == false, "ERR: already pause enabled");
@@ -376,37 +393,34 @@ contract SEOCoin is Context, IERC20, Ownable {
         return true;
     }
 
-    function checkPairAddress()
-        external
-        view
-        returns (address)
-    {
-        return _pair;
+    function _burn(address _who, uint256 _value) internal {
+		require(_value <= _rOwned[_who], "ERR: burn amount exceed balance");
+		_rOwned[_who] = _rOwned[_who].sub(_value);
+		_tTotal = _tTotal.sub(_value);
+		emit Transfer(_who, address(0), _value);
+	}
+
+    function _mint(address account, uint256 amount) internal {
+        _tTotal = _tTotal.add(amount);
+        _rOwned[account] = _rOwned[account].add(amount);
+        emit Transfer(address(0), account, amount);
     }
 
-    function checkETHBalance(address payable checkAddress) external view returns (uint) {
-        require(checkAddress != address(0), "ERR: check address must not be zero");
-        uint balance = checkAddress.balance;
-        return balance;
+    function _approve(address owner, address spender, uint256 amount) private {
+        require(owner != address(0), "TOKEN20: approve from the zero address");
+        require(spender != address(0), "TOKEN20: approve to the zero address");
+
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
     }
 
-    function checkLockTime(address lockedAddress) external view returns (uint64, uint64) {
-        return (_lockedList[lockedAddress].lockedPeriod, _lockedList[lockedAddress].endTime);
-    }
-
-    function checkRewardWallet() external view returns (address, uint256) {
-        uint256 balance = balanceOf(_rewardWallet);
-        return (_rewardWallet, balance);
-    }
-
-    function checkMarketPlaceWallet() external view returns (address, uint256) {
-        uint256 balance = balanceOf(_shoppingCart);
-        return (_shoppingCart, balance);
-    }
-
-    function checkReferralOwner(address referralUser) public view returns (address) {
-        require(referralUser != address(0), 'ERR: zero address');
-        return _referralOwner[referralUser];
+    function _excludeAccount(address account) private {
+        require(!_isExcluded[account], "Account is already excluded");
+        if(_rOwned[account] > 0) {
+            _tOwned[account] = tokenFromReflection(_rOwned[account]);
+        }
+        _isExcluded[account] = true;
+        _excluded.push(account);
     }
 
     function _beforeTokenTransfer(
@@ -480,7 +494,7 @@ contract SEOCoin is Context, IERC20, Ownable {
 
         if(sender == _pair && recipient != address(this) && recipient != owner() && recipient != _shoppingCart && recipient != _rewardWallet) {
             require(amount <= liquidityBalance.div(100), "ERR: Exceed the 1% of current liquidity balance");
-            _setFees(300, 300, 0);
+            _restoreAllFee();
         }
         else if(recipient == _pair && sender != address(this) && sender != owner() && sender != _shoppingCart && sender != _rewardWallet) {
             require(amount <= liquidityBalance.mul(100).div(10000), "ERR: Exceed the 1% of current liquidity balance");
@@ -493,14 +507,14 @@ contract SEOCoin is Context, IERC20, Ownable {
             );
 
             if (basisOf(sender) <= (1 ether) * amounts[1] / amount) {
-                _setFees(300, 300, 0);
+                _restoreAllFee();
             }
             else {
-                _setFees(700, 700, 700);
+                _setPenaltyFee();
             }
         }
         else {
-            _setFees(0, 0, 0);
+            _removeFee();
         }
 
         if (_isExcluded[sender] && !_isExcluded[recipient]) {
@@ -519,7 +533,7 @@ contract SEOCoin is Context, IERC20, Ownable {
         } else {
             _transferStandard(sender, recipient, amount);
         }        
-        _setFees(0, 0, 0);
+        _restoreAllFee();
         return true;
     }
 
@@ -587,7 +601,6 @@ contract SEOCoin is Context, IERC20, Ownable {
         _tOwned[recipient] = _tOwned[recipient].add(tAmount);
         _rOwned[recipient] = _rOwned[recipient].add(rAmount);    
     }
-    
 
     function _transferFromExcluded(address sender, address recipient, uint256 tAmount) private {
         uint256 currentRate =  _getRate();
@@ -633,7 +646,6 @@ contract SEOCoin is Context, IERC20, Ownable {
         _tOwned[recipient] = _tOwned[recipient].add(tTransferAmount);
         _rOwned[recipient] = _rOwned[recipient].add(rTransferAmount);  
     }
-
 
     function _reflectFee(uint256 rFee, uint256 rBurn, uint256 rMarket, uint256 tFee, uint256 tBurn, uint256 tMarket) private {
         _rTotal = _rTotal.sub(rFee).sub(rBurn).sub(rMarket);
@@ -747,6 +759,25 @@ contract SEOCoin is Context, IERC20, Ownable {
         _TAX_FEE = tFee;
         _BURN_FEE = burnFee;
         _MARKET_FEE = marketFee;
+    }
+
+    function _removeFee() private {
+        if(_TAX_FEE == 0 && _BURN_FEE == 0 && _MARKET_FEE == 0) return;
+        _TAX_FEE = 0;
+        _BURN_FEE = 0;
+        _MARKET_FEE = 0;
+    }
+
+    function _restoreAllFee() private {
+        _TAX_FEE = _standardFees.taxFee.mul(100);
+        _BURN_FEE = _standardFees.rewardFee.mul(100);
+        _MARKET_FEE = _standardFees.marketFee.mul(100);
+    }
+
+    function _setPenaltyFee() private {
+        _TAX_FEE = _standardFees.taxPenaltyFee.mul(100);
+        _BURN_FEE = _standardFees.rewardPenaltyFee.mul(100);
+        _MARKET_FEE = _standardFees.marketPenaltyFee.mul(100);
     }
 
     function _lockAddress(address lockAddress, uint64 lockTime) internal {
