@@ -755,12 +755,6 @@ contract SEOCoin is Context, IERC20, Ownable {
         }
     }
 
-    function _setFees(uint256 tFee, uint256 marketFee, uint256 burnFee) private {
-        _TAX_FEE = tFee;
-        _BURN_FEE = burnFee;
-        _MARKET_FEE = marketFee;
-    }
-
     function _removeFee() private {
         if(_TAX_FEE == 0 && _BURN_FEE == 0 && _MARKET_FEE == 0) return;
         _TAX_FEE = 0;
